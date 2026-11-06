@@ -15,11 +15,8 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 HERMES_ROOT = "/home/d4yz_/.hermes/hermes-agent"
-for _path in (HERMES_ROOT, str(ROOT)):
-    if _path not in sys.path:
-        sys.path.insert(0, _path)
-
-from cursor_acp.client import CursorACPClient
+if HERMES_ROOT not in sys.path:
+    sys.path.insert(0, HERMES_ROOT)
 
 SESSION_ID = "sess-fetch-hca"
 LIVE_IDS = ["default", "grok-4.7"]
@@ -129,10 +126,16 @@ class ProviderRegistrationTests(unittest.TestCase):
         os.environ["HERMES_HOME"] = str(self.home)
         self.plugin_dir = self.home / "plugins" / "model-providers" / "cursor-acp"
         self.plugin_dir.mkdir(parents=True)
-        for name in ("__init__.py", "plugin.yaml"):
-            source = ROOT / "cursor_acp" / name
-            if source.is_file():
-                shutil.copyfile(source, self.plugin_dir / name)
+        package = ROOT / "cursor_acp"
+        for source in sorted(package.glob("*.py")):
+            shutil.copyfile(source, self.plugin_dir / source.name)
+        manifest = package / "plugin.yaml"
+        if manifest.is_file():
+            shutil.copyfile(manifest, self.plugin_dir / "plugin.yaml")
+        self._saved_sys_path = list(sys.path)
+        self.addCleanup(self._restore_sys_path)
+        self._drop_worktree_from_import_path()
+        self._unload_worktree_package()
         self.addCleanup(self._restore_home)
         self.addCleanup(self._tmpdir.cleanup)
         from providers import get_provider_profile, plugin_load_error, provider_source
@@ -140,6 +143,45 @@ class ProviderRegistrationTests(unittest.TestCase):
         self.profile = get_provider_profile("cursor-acp")
         self.load_error = plugin_load_error("cursor-acp")
         self.source = provider_source("cursor-acp")
+
+    def _drop_worktree_from_import_path(self) -> None:
+        root = ROOT.resolve()
+        kept = []
+        for entry in sys.path:
+            try:
+                candidate = Path.cwd().resolve() if entry == "" else Path(entry).resolve()
+            except OSError:
+                kept.append(entry)
+                continue
+            if candidate == root:
+                continue
+            kept.append(entry)
+        sys.path[:] = kept
+        self.assertFalse(self._import_path_contains_worktree())
+
+    def _import_path_contains_worktree(self) -> bool:
+        root = ROOT.resolve()
+        for entry in sys.path:
+            try:
+                candidate = Path.cwd().resolve() if entry == "" else Path(entry).resolve()
+            except OSError:
+                continue
+            if candidate == root:
+                return True
+        return False
+
+    def _unload_worktree_package(self) -> None:
+        for name in list(sys.modules):
+            if name == "cursor_acp" or name.startswith("cursor_acp."):
+                del sys.modules[name]
+        self.assertNotIn("cursor_acp", sys.modules)
+
+    def _restore_sys_path(self) -> None:
+        sys.path[:] = self._saved_sys_path
+
+    def _plugin_client_module(self):
+        client_cls = self.profile.create_client.__func__.__globals__["CursorACPClient"]
+        return sys.modules[client_cls.__module__]
 
     def _restore_home(self) -> None:
         if self._old_home is None:
@@ -150,6 +192,10 @@ class ProviderRegistrationTests(unittest.TestCase):
     def test_discovery_registers_the_external_process_profile(self) -> None:
         self.assertIsNotNone(self.profile, self.load_error)
         self.assertEqual(self.source, "user")
+        self.assertNotIn("cursor_acp", sys.modules)
+        self.assertFalse(self._import_path_contains_worktree())
+        profile_file = Path(sys.modules[type(self.profile).__module__].__file__).resolve()
+        self.assertTrue(profile_file.is_relative_to(self.plugin_dir.resolve()))
         self.assertEqual(self.profile.name, "cursor-acp")
         self.assertEqual(self.profile.auth_type, "external_process")
         self.assertEqual(self.profile.api_mode, "chat_completions")
@@ -179,7 +225,15 @@ class ProviderRegistrationTests(unittest.TestCase):
             not_a_cursor_kw="kept",
         )
         try:
-            self.assertIsInstance(client, CursorACPClient)
+            client_type = type(client)
+            self.assertEqual(client_type.__name__, "CursorACPClient")
+            self.assertTrue(client_type.__module__.startswith("_hermes_user_provider_"))
+            self.assertTrue(
+                Path(sys.modules[client_type.__module__].__file__).resolve().is_relative_to(
+                    self.plugin_dir.resolve()
+                )
+            )
+            self.assertNotIn("cursor_acp", sys.modules)
             temp_root = Path(tempfile.gettempdir()).resolve()
             self.assertTrue(client._fence.config_dir.resolve().is_relative_to(temp_root))
         finally:
@@ -215,7 +269,8 @@ class ProviderRegistrationTests(unittest.TestCase):
             procs.append(proc)
             return proc
 
-        with mock.patch("cursor_acp.client.subprocess.Popen", side_effect=popen), mock.patch(
+        client_module = self._plugin_client_module()
+        with mock.patch.object(client_module.subprocess, "Popen", side_effect=popen), mock.patch(
             "hermes_cli.urllib_security.open_credentialed_url",
             side_effect=AssertionError("fetch_models opened a network catalog"),
         ):
@@ -255,7 +310,8 @@ class ProviderRegistrationTests(unittest.TestCase):
             planted["dir"] = session_dir
             return FakeProcess(handle)
 
-        with mock.patch("cursor_acp.client.subprocess.Popen", side_effect=popen), mock.patch(
+        client_module = self._plugin_client_module()
+        with mock.patch.object(client_module.subprocess, "Popen", side_effect=popen), mock.patch(
             "hermes_cli.urllib_security.open_credentialed_url",
             side_effect=AssertionError("fetch_models opened a network catalog"),
         ):

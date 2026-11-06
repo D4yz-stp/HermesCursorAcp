@@ -27,9 +27,9 @@ from agent.acp_client import (
 )
 from agent.acp_openai_bridge import completion_to_stream_chunks, extract_tool_calls_from_text
 
-from cursor_acp.fence import Fence
-from cursor_acp.model_pin import ModelPinError, resolve_model_pin
-from cursor_acp.normalize import normalize_tool_call_text
+from .fence import Fence
+from .model_pin import ModelPinError, resolve_model_pin
+from .normalize import normalize_tool_call_text
 
 _INITIALIZE_PARAMS = {
     "protocolVersion": 1,

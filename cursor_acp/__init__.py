@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from cursor_acp.client import CursorACPClient
+from .client import CursorACPClient
 from providers import register_provider
 from providers.base import ProviderProfile
 
