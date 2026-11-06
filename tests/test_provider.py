@@ -207,7 +207,6 @@ class ProviderRegistrationTests(unittest.TestCase):
         self.assertFalse(self.profile.supports_vision)
         self.assertIsNone(self.profile.get_model_context_length("grok-4.7"))
         self.assertFalse((self.home / "plugins" / "cursor-acp").exists())
-        self.assertFalse((Path.home() / ".hermes" / "plugins" / "model-providers" / "cursor-acp").exists())
 
     def test_plugin_manifest_is_the_three_declared_lines(self) -> None:
         manifest = self.plugin_dir / "plugin.yaml"

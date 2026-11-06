@@ -757,8 +757,13 @@ class CursorACPClientTests(unittest.TestCase):
         self.assertEqual(chunks[0].choices[0].finish_reason, "stop")
 
     def test_overlapping_prompts_clean_only_their_own_session(self) -> None:
-        """Two live sessions: each prompt deletes its own id and leaves the other."""
+        """Two live sessions: each prompt deletes its own id and leaves the other.
+
+        The shared fence tmpdir stays until the last of those prompts finishes.
+        """
         sessions = self.client._fence.config_dir / "acp-sessions"
+        shared_tmp = self.client._fence.tmpdir / "shared-live.txt"
+        shared_tmp.write_text("still-live", encoding="utf-8")
         ids = ["sess-live-a", "sess-live-b"]
         id_lock = threading.Lock()
         id_box = {"n": 0}
@@ -837,6 +842,8 @@ class CursorACPClientTests(unittest.TestCase):
             self.assertFalse(second.is_alive())
             self.assertFalse((sessions / "sess-live-b").exists())
             self.assertTrue((sessions / "sess-live-a" / "residue.txt").is_file())
+            self.assertTrue(shared_tmp.is_file())
+            self.assertEqual(shared_tmp.read_text(encoding="utf-8"), "still-live")
 
             release["sess-live-a"].set()
             first.join(5)
@@ -845,3 +852,5 @@ class CursorACPClientTests(unittest.TestCase):
         self.assertEqual(errors, [])
         self.assertFalse((sessions / "sess-live-a").exists())
         self.assertFalse((sessions / "sess-live-b").exists())
+        self.assertFalse(shared_tmp.exists())
+        self.assertFalse(self.client._fence.tmpdir.exists())

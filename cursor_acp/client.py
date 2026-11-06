@@ -57,6 +57,8 @@ class CursorACPClient(ACPClient):
         self._fence = Fence.create()
         self._fence_closed = False
         self._request_process: subprocess.Popen[str] | None = None
+        self._live_sessions = 0
+        self._live_sessions_lock = threading.Lock()
         kwargs["acp_cwd"] = str(self._fence.cwd)
         super().__init__(**kwargs)
 
@@ -103,6 +105,25 @@ class CursorACPClient(ACPClient):
             self.is_closed = False
         self._request_process = proc
         return proc
+
+    @contextlib.contextmanager
+    def _live_turn(self, session_holder: dict[str, str | None]) -> Iterator[None]:
+        """Count this prompt until its cleanup, then drop the shared tmpdir last."""
+        with self._live_sessions_lock:
+            self._live_sessions += 1
+        try:
+            yield
+        finally:
+            with self._live_sessions_lock:
+                try:
+                    session_id = session_holder.get("id")
+                    if session_id and not self._fence_closed:
+                        self._fence.cleanup_turn(
+                            session_id,
+                            delete_tmpdir=self._live_sessions == 1,
+                        )
+                finally:
+                    self._live_sessions -= 1
 
     @contextlib.contextmanager
     def _session(
@@ -208,21 +229,17 @@ class CursorACPClient(ACPClient):
     def list_models(self, *, timeout_seconds: float = 15.0) -> list[str]:
         """One short session, then delete that session's acp-sessions directory."""
         session_holder: dict[str, str | None] = {"id": None}
-        try:
+        with self._live_turn(session_holder):
             with self._session(
                 timeout_seconds, allow_file_requests=False, session_holder=session_holder
             ) as (session, _):
                 return _session_model_ids(session, self.model_entry_disabled)
-        finally:
-            session_id = session_holder["id"]
-            if session_id and not self._fence_closed:
-                self._fence.cleanup_turn(session_id)
 
     def _run_prompt(
         self, prompt_text: str, *, timeout_seconds: float, model: str | None = None
     ) -> tuple[str, str]:
         session_holder: dict[str, str | None] = {"id": None}
-        try:
+        with self._live_turn(session_holder):
             with self._session(timeout_seconds, session_holder=session_holder) as (session, _request):
                 session_id = str(session.get("sessionId") or "").strip()
                 available_ids = _session_model_ids(session, self.model_entry_disabled)
@@ -259,10 +276,6 @@ class CursorACPClient(ACPClient):
                     reasoning_parts=reasoning_parts,
                 )
                 return "".join(text_parts), "".join(reasoning_parts)
-        finally:
-            session_id = session_holder["id"]
-            if session_id and not self._fence_closed:
-                self._fence.cleanup_turn(session_id)
 
     def _create_chat_completion(
         self,

@@ -117,11 +117,12 @@ class Fence:
     def command_argv(self) -> list[str]:
         return ["agent", "acp"]
 
-    def cleanup_turn(self, session_id: str) -> None:
+    def cleanup_turn(self, session_id: str, *, delete_tmpdir: bool = True) -> None:
         self._require_open()
         _reject_session_id(session_id)
         self._delete_session(session_id)
-        self._delete_tmpdir()
+        if delete_tmpdir:
+            self._delete_tmpdir()
 
     def close(self) -> None:
         if self._closed:
