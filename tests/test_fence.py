@@ -390,5 +390,52 @@ class FenceTests(unittest.TestCase):
         self.assertTrue(parent.is_dir())
 
 
+
+    def test_cleanup_turn_unlinks_tmpdir_symlink_and_leaves_the_target(self) -> None:
+        self.fence = Fence.create()
+        outside = Path(tempfile.mkdtemp(prefix="fence-tmpdir-target-"))
+        self._extra.append(outside)
+        canary = outside / "canary.txt"
+        canary.write_text("outside-canary", encoding="utf-8")
+        self.fence.tmpdir.rmdir()
+        self.fence.tmpdir.symlink_to(outside, target_is_directory=True)
+        session_dir = self.fence.config_dir / "acp-sessions" / "sess-link"
+        session_dir.mkdir(parents=True)
+        (session_dir / "store.db-wal").write_text("session-canary", encoding="utf-8")
+
+        raised: BaseException | None = None
+        try:
+            self.fence.cleanup_turn("sess-link")
+        except ValueError as exc:
+            raised = exc
+
+        self.assertIsNone(raised)
+        self.assertFalse(self.fence.tmpdir.is_symlink())
+        self.assertFalse(self.fence.tmpdir.exists())
+        self.assertEqual(canary.read_text(encoding="utf-8"), "outside-canary")
+        self.assertTrue(outside.is_dir())
+        self.assertFalse(session_dir.exists())
+
+    def test_prepare_spawn_after_close_raises_and_leaves_no_tree(self) -> None:
+        self.fence = Fence.create()
+        parent = self.fence.cwd.parent
+        self.fence.close()
+
+        with self.assertRaises(ValueError):
+            self.fence.prepare_spawn()
+
+        self.assertFalse(parent.exists())
+
+    def test_cleanup_turn_after_close_raises_and_leaves_no_tree(self) -> None:
+        self.fence = Fence.create()
+        parent = self.fence.cwd.parent
+        self.fence.close()
+
+        with self.assertRaises(ValueError):
+            self.fence.cleanup_turn("sess-1")
+
+        self.assertFalse(parent.exists())
+
+
 if __name__ == "__main__":
     unittest.main()

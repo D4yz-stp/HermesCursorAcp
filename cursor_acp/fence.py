@@ -95,6 +95,7 @@ class Fence:
         return fence
 
     def prepare_spawn(self) -> None:
+        self._require_open()
         self._mkdir_private(self._parent, parents=True)
         for directory in self._directories():
             if directory.parent != self._parent:
@@ -117,6 +118,7 @@ class Fence:
         return ["agent", "acp"]
 
     def cleanup_turn(self, session_id: str) -> None:
+        self._require_open()
         _reject_session_id(session_id)
         self._delete_session(session_id)
         self._delete_tmpdir()
@@ -214,12 +216,17 @@ class Fence:
             raise ValueError("refusing to delete session directory")
         shutil.rmtree(resolved)
 
+    def _require_open(self) -> None:
+        if self._closed:
+            raise ValueError("fence is closed")
+
     def _delete_tmpdir(self) -> None:
-        if not self.tmpdir.exists() and not self.tmpdir.is_symlink():
-            return
         if self.tmpdir.is_symlink():
-            self._require_inside(self.tmpdir.parent)
+            if self.tmpdir.parent != self._parent:
+                raise ValueError("refusing to delete tmpdir outside the fence")
             self.tmpdir.unlink()
+            return
+        if not self.tmpdir.exists():
             return
         resolved = self._require_inside(self.tmpdir)
         shutil.rmtree(resolved)
