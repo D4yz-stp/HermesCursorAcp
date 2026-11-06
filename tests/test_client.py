@@ -7,6 +7,7 @@ import queue
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -754,3 +755,93 @@ class CursorACPClientTests(unittest.TestCase):
         chunks, _proc = self._drive(model="grok-4.7", stream=True)
         self.assertIsNone(chunks[-1].usage)
         self.assertEqual(chunks[0].choices[0].finish_reason, "stop")
+
+    def test_overlapping_prompts_clean_only_their_own_session(self) -> None:
+        """Two live sessions: each prompt deletes its own id and leaves the other."""
+        sessions = self.client._fence.config_dir / "acp-sessions"
+        ids = ["sess-live-a", "sess-live-b"]
+        id_lock = threading.Lock()
+        id_box = {"n": 0}
+        release = {sid: threading.Event() for sid in ids}
+        arrived = {sid: threading.Event() for sid in ids}
+        for event in release.values():
+            self.addCleanup(event.set)
+
+        def handle(proc: FakeProcess, msg: dict) -> list[dict]:
+            method = msg["method"]
+            if method == "initialize":
+                return [rpc_result(msg, {"protocolVersion": 1})]
+            if method == "session/new":
+                with id_lock:
+                    sid = ids[id_box["n"]]
+                    id_box["n"] += 1
+                proc.session_id = sid
+                residue = sessions / sid / "residue.txt"
+                residue.parent.mkdir(parents=True, exist_ok=True)
+                residue.write_text(sid)
+                return [
+                    rpc_result(
+                        msg,
+                        {
+                            "sessionId": sid,
+                            "models": {
+                                "currentModelId": "grok-4.7",
+                                "availableModels": [{"modelId": "grok-4.7", "name": "Grok"}],
+                            },
+                        },
+                    )
+                ]
+            if method in {"session/set_mode", "session/set_model"}:
+                return [rpc_result(msg, {})]
+            if method == "session/prompt":
+                sid = proc.session_id
+                arrived[sid].set()
+                self.assertTrue(release[sid].wait(timeout=5))
+                return [
+                    text_chunk("agent_message_chunk", sid),
+                    rpc_result(msg, {"stopReason": "end_turn"}),
+                ]
+            return [rpc_error(msg, -32601, f"unexpected {method}")]
+
+        def popen(argv, **kwargs):
+            proc = FakeProcess(lambda msg: handle(proc, msg))
+            proc.session_id = ""
+            return proc
+
+        errors: list[BaseException] = []
+
+        def complete(text: str) -> None:
+            try:
+                self.client.chat.completions.create(
+                    model="grok-4.7",
+                    messages=[{"role": "user", "content": text}],
+                    timeout=5,
+                )
+            except BaseException as exc:
+                errors.append(exc)
+
+        with mock.patch("cursor_acp.client.subprocess.Popen", side_effect=popen):
+            first = threading.Thread(target=complete, args=("prompt-a",))
+            second = threading.Thread(target=complete, args=("prompt-b",))
+            first.start()
+            self.addCleanup(first.join, 5)
+            self.assertTrue(arrived["sess-live-a"].wait(timeout=5))
+            second.start()
+            self.addCleanup(second.join, 5)
+            self.assertTrue(arrived["sess-live-b"].wait(timeout=5))
+            self.assertTrue((sessions / "sess-live-a" / "residue.txt").is_file())
+            self.assertTrue((sessions / "sess-live-b" / "residue.txt").is_file())
+
+            release["sess-live-b"].set()
+            second.join(5)
+            self.assertFalse(second.is_alive())
+            self.assertFalse((sessions / "sess-live-b").exists())
+            self.assertTrue((sessions / "sess-live-a" / "residue.txt").is_file())
+
+            release["sess-live-a"].set()
+            first.join(5)
+            self.assertFalse(first.is_alive())
+
+        self.assertEqual(errors, [])
+        self.assertFalse((sessions / "sess-live-a").exists())
+        self.assertFalse((sessions / "sess-live-b").exists())

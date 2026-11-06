@@ -57,8 +57,6 @@ class CursorACPClient(ACPClient):
         self._fence = Fence.create()
         self._fence_closed = False
         self._request_process: subprocess.Popen[str] | None = None
-        self._prompt_session_id: str | None = None
-        self._capture_prompt_session = False
         kwargs["acp_cwd"] = str(self._fence.cwd)
         super().__init__(**kwargs)
 
@@ -108,7 +106,11 @@ class CursorACPClient(ACPClient):
 
     @contextlib.contextmanager
     def _session(
-        self, timeout_seconds: float, *, allow_file_requests: bool = True
+        self,
+        timeout_seconds: float,
+        *,
+        allow_file_requests: bool = True,
+        session_holder: dict[str, str | None] | None = None,
     ) -> Iterator[tuple[dict[str, Any], Callable[..., Any]]]:
         if self._fence_closed:
             raise RuntimeError("Cursor ACP client is closed.")
@@ -196,8 +198,8 @@ class CursorACPClient(ACPClient):
             session_id = str(session.get("sessionId") or "").strip()
             if not session_id:
                 raise RuntimeError(f"{self.label} did not return a sessionId.")
-            if self._capture_prompt_session:
-                self._prompt_session_id = session_id
+            if session_holder is not None:
+                session_holder["id"] = session_id
             _request("session/set_mode", {"sessionId": session_id, "modeId": "ask"})
             yield session, _request
         finally:
@@ -206,10 +208,9 @@ class CursorACPClient(ACPClient):
     def _run_prompt(
         self, prompt_text: str, *, timeout_seconds: float, model: str | None = None
     ) -> tuple[str, str]:
-        self._prompt_session_id = None
-        self._capture_prompt_session = True
+        session_holder: dict[str, str | None] = {"id": None}
         try:
-            with self._session(timeout_seconds) as (session, _request):
+            with self._session(timeout_seconds, session_holder=session_holder) as (session, _request):
                 session_id = str(session.get("sessionId") or "").strip()
                 available_ids = _session_model_ids(session, self.model_entry_disabled)
                 requested = "" if model is None else str(model)
@@ -246,9 +247,7 @@ class CursorACPClient(ACPClient):
                 )
                 return "".join(text_parts), "".join(reasoning_parts)
         finally:
-            self._capture_prompt_session = False
-            session_id = self._prompt_session_id
-            self._prompt_session_id = None
+            session_id = session_holder["id"]
             if session_id and not self._fence_closed:
                 self._fence.cleanup_turn(session_id)
 
