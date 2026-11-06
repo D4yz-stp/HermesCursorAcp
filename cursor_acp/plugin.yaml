@@ -1,0 +1,3 @@
+name: cursor-acp
+kind: model-provider
+description: Hermes client for the Cursor agent ACP process.

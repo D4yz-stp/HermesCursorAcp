@@ -205,6 +205,19 @@ class CursorACPClient(ACPClient):
         finally:
             self._release_process(proc)
 
+    def list_models(self, *, timeout_seconds: float = 15.0) -> list[str]:
+        """One short session, then delete that session's acp-sessions directory."""
+        session_holder: dict[str, str | None] = {"id": None}
+        try:
+            with self._session(
+                timeout_seconds, allow_file_requests=False, session_holder=session_holder
+            ) as (session, _):
+                return _session_model_ids(session, self.model_entry_disabled)
+        finally:
+            session_id = session_holder["id"]
+            if session_id and not self._fence_closed:
+                self._fence.cleanup_turn(session_id)
+
     def _run_prompt(
         self, prompt_text: str, *, timeout_seconds: float, model: str | None = None
     ) -> tuple[str, str]:
